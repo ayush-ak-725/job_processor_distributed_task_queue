@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Note: Using external database (Render.com)
+  # PostgreSQL service removed - using external DATABASE_URL
+  # If you need a local postgres for testing, uncomment below:
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: job_queue_db_prod
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     POSTGRES_DB: ${POSTGRES_DB:-job_queue_db}
+  #   ports:
+  #     - "${POSTGRES_PORT:-5432}:5432"
+  #   volumes:
+  #     - postgres_data_prod:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - job_queue_network
+  #   restart: always
+
+  # Backend API
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: job-queue-backend:latest
+    container_name: job_queue_backend_prod
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aka725:10obzco4QMK9if1Ny8EU4XlW8n24iNOa@dpg-d4gp4kqli9vc73doso30-a.oregon-postgres.render.com/nurix_user_queue}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      API_RELOAD: "false"
+      SECRET_KEY: ${SECRET_KEY}
+      WORKER_POOL_SIZE: ${WORKER_POOL_SIZE:-5}
+      WORKER_LEASE_TTL_SECONDS: ${WORKER_LEASE_TTL_SECONDS:-300}
+      WORKER_MAX_RETRIES: ${WORKER_MAX_RETRIES:-3}
+      WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-1}
+      DEFAULT_RATE_LIMIT_PER_MINUTE: ${DEFAULT_RATE_LIMIT_PER_MINUTE:-10}
+      DEFAULT_MAX_CONCURRENT_JOBS: ${DEFAULT_MAX_CONCURRENT_JOBS:-5}
+      DEBUG: "false"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    # No postgres dependency - using external database
+    networks:
+      - job_queue_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Worker Pool (can scale horizontally)
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.worker
+    image: job-queue-worker:latest
+    container_name: job_queue_worker_prod
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aka725:10obzco4QMK9if1Ny8EU4XlW8n24iNOa@dpg-d4gp4kqli9vc73doso30-a.oregon-postgres.render.com/nurix_user_queue}
+      WORKER_POOL_SIZE: ${WORKER_POOL_SIZE:-5}
+      WORKER_LEASE_TTL_SECONDS: ${WORKER_LEASE_TTL_SECONDS:-300}
+      WORKER_MAX_RETRIES: ${WORKER_MAX_RETRIES:-3}
+      WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-1}
+      DEBUG: "false"
+    # No postgres dependency - using external database
+      backend:
+        condition: service_healthy
+    networks:
+      - job_queue_network
+    restart: always
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: job-queue-frontend:latest
+    container_name: job_queue_frontend_prod
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    networks:
+      - job_queue_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+# volumes:
+#   postgres_data_prod:  # Not needed with external database
+
+networks:
+  job_queue_network:
+    driver: bridge
+

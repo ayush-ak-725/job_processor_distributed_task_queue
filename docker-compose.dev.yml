@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: job_queue_db_dev
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: job_queue_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - job_queue_network
+
+  # Backend API (Development with hot reload)
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: job_queue_backend_dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aka725:10obzco4QMK9if1Ny8EU4XlW8n24iNOa@dpg-d4gp4kqli9vc73doso30-a.oregon-postgres.render.com/nurix_user_queue}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      API_RELOAD: "true"
+      SECRET_KEY: dev-secret-key
+      WORKER_POOL_SIZE: 3
+      WORKER_LEASE_TTL_SECONDS: 300
+      WORKER_MAX_RETRIES: 3
+      WORKER_POLL_INTERVAL_SECONDS: 1
+      DEFAULT_RATE_LIMIT_PER_MINUTE: 10
+      DEFAULT_MAX_CONCURRENT_JOBS: 5
+      DEBUG: "true"
+    ports:
+      - "8000:8000"
+    # Optional: Remove postgres dependency if using external database
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./backend/scripts:/app/scripts
+    networks:
+      - job_queue_network
+    restart: unless-stopped
+
+  # Worker Pool (Development)
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.worker
+    container_name: job_queue_worker_dev
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aka725:10obzco4QMK9if1Ny8EU4XlW8n24iNOa@dpg-d4gp4kqli9vc73doso30-a.oregon-postgres.render.com/nurix_user_queue}
+      WORKER_POOL_SIZE: 3
+      WORKER_LEASE_TTL_SECONDS: 300
+      WORKER_MAX_RETRIES: 3
+      WORKER_POLL_INTERVAL_SECONDS: 1
+      DEBUG: "true"
+    # Optional: Remove postgres dependency if using external database
+    depends_on:
+      # postgres:
+      #   condition: service_healthy
+      backend:
+        condition: service_started
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/scripts:/app/scripts
+    networks:
+      - job_queue_network
+    restart: unless-stopped
+
+  # Frontend (Development with hot reload)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: job_queue_frontend_dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.js:/app/vite.config.js
+      - ./frontend/package.json:/app/package.json
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - job_queue_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data_dev:
+
+networks:
+  job_queue_network:
+    driver: bridge
+
